@@ -1,0 +1,12 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/tmp/
+/.elixir_ls/
+/.fetch
+erl_crash.dump
+*.ez
+system_one-*.tar
+/.vscode/
+/priv/models/

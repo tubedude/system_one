@@ -1,0 +1,143 @@
+# Try SystemOne with Laya
+
+This standalone notebook installs SystemOne, downloads the Laya model, and
+asks typed questions about application data. You do not need to clone the
+SystemOne repository.
+
+The model download is approximately 1.6 GB. CPU inference adds roughly 1.6 GB
+of resident memory and may take several seconds per query. This notebook uses
+the CPU so it works without CUDA-specific setup.
+
+## Install SystemOne
+
+`Mix.install/2` downloads SystemOne and its dependencies from Hex. Livebook
+caches compiled dependencies, so subsequent sessions generally start faster.
+
+```elixir
+Mix.install(
+  [
+    {:system_one, "~> 0.1.0"},
+    {:kino, "~> 0.19"}
+  ]
+)
+```
+
+## Download and verify Laya
+
+The bundle is stored in your user cache rather than beside the notebook. The
+installer verifies pinned SHA-256 checksums and reuses a complete existing
+bundle. The first evaluation can take several minutes, depending on the
+connection.
+
+```elixir
+model_dir = Path.join([System.user_home!(), ".cache", "system_one", "models", "laya"])
+
+{:ok, _started} = Application.ensure_all_started(:req)
+
+progress = fn
+  {:download, path} -> IO.puts("Downloading #{path}")
+  {:verified, path} -> IO.puts("Verified #{path}")
+  {:complete, path} -> IO.puts("Bundle ready at #{path}")
+end
+
+case SystemOne.Installer.install(SystemOne.Models.Laya,
+       destination: model_dir,
+       progress: progress
+     ) do
+  {:ok, ^model_dir} ->
+    Kino.Markdown.new("✅ Laya is installed and verified at `#{model_dir}`.")
+
+  {:error, reason} ->
+    raise "Laya installation failed: #{inspect(reason)}"
+end
+```
+
+## Start a CPU serving
+
+Loading happens asynchronously. The second call waits until the model is
+ready and returns the status, including the serving process identifier.
+Re-evaluating this cell reuses the already-started notebook instance.
+
+```elixir
+name = SystemOne.Livebook
+
+case SystemOne.start_link(
+       name: name,
+       model: SystemOne.Models.Laya,
+       model_dir: model_dir,
+       execution_providers: [:cpu]
+     ) do
+  {:ok, _pid} -> :ok
+  {:error, {:already_started, _pid}} -> :ok
+end
+
+{:ok, status} = SystemOne.await_ready(name, timeout: 120_000)
+status
+```
+
+## Ask several question types
+
+One query can contain choice, ordered-score, and yes/no-probability questions.
+The `:noul` value is a probability, not a boolean. The score is a fractional
+expected zero-based level.
+
+```elixir
+alias SystemOne.{Query, Question}
+
+query =
+  Query.new(%{message: "The production server is down again! Please help now."}, [
+    Question.new(:sentiment, :choice, "How does this message feel?",
+      criteria: ["positive", "neutral", "negative"]
+    ),
+    Question.new(:urgency, :score, "How urgent is this?",
+      criteria: ["can wait", "today", "right now"]
+    ),
+    Question.new(:spam, :noul, "Is this spam?")
+  ])
+
+{:ok, result} = SystemOne.query(name, query)
+result
+```
+
+## Inspect the useful fields
+
+```elixir
+for {id, answer} <- result.answers, into: %{} do
+  {id,
+   %{
+     value: answer.choice || answer.score || answer.noul,
+     confidence: answer.confidence,
+     probabilities: answer.probabilities,
+     metadata: answer.metadata
+   }}
+end
+```
+
+Try changing the message, instructions, and criteria, then reevaluate the last
+two cells. A query must contain 1–64 questions. Choice and score questions
+accept 1–20 options; noul always has two model options.
+
+Each question is encoded into at most 512 tokens. Instructions and options
+share a 192-token header budget, and each option is initially capped at 48
+tokens. State uses the remaining space. Excess text is silently truncated;
+`result.usage.input_tokens` reports the post-truncation total. SystemOne does
+not limit input bytes before tokenization, so applications should reject
+unreasonably large untrusted requests themselves. Question IDs should also be
+unique because answers are keyed by ID.
+
+## Handle lifecycle errors
+
+Applications should not assume every call succeeds. A production caller
+should handle loading, stopped, failed, and invalid-query results explicitly:
+
+```elixir
+case SystemOne.query(name, query) do
+  {:ok, result} -> {:served, result}
+  {:error, {:invalid_query, message}} -> {:bad_input, message}
+  {:error, {:unavailable, reason}} -> {:temporarily_unavailable, reason}
+end
+```
+
+For CUDA, complete the repository's GPU guide first, rebuild Ortex with CUDA
+support, and change the providers to `[:cuda, :cpu]`. A `:ready` status alone
+does not prove that the CUDA provider loaded.

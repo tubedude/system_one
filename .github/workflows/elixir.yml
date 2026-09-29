@@ -1,0 +1,96 @@
+name: Elixir CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # Advisories are published on someone else's schedule, so the audit job
+  # re-checks the lock daily even when nothing is pushed.
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Security advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      - run: mix deps.get
+
+      # Fails on a retired package or a security advisory in mix.lock.
+      - name: mix hex.audit
+        run: mix hex.audit
+
+  test:
+    name: Test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
+    runs-on: ubuntu-latest
+    # The daily trigger exists for the audit job only.
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      # Cover the declared support range (mix.exs: elixir ~> 1.18). The newest
+      # pair matches .tool-versions; format, warnings-as-errors and docs run
+      # only there.
+      matrix:
+        include:
+          - elixir: "1.18"
+            otp: "27"
+          - elixir: "1.19"
+            otp: "28"
+          - elixir: "1.20"
+            otp: "29"
+            primary: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      # Ortex has no precompiled NIF, so it builds from Rust source.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.96.1
+
+      # _build holds the compiled Ortex NIF, which is the slow part.
+      - name: Restore deps and _build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      # Formatting can differ between Elixir versions.
+      - name: Check formatting
+        if: matrix.primary
+        run: mix format --check-formatted
+
+      # Older Elixir may warn on newer-stdlib calls that aren't real problems.
+      - name: Compile (warnings as errors)
+        if: matrix.primary
+        run: MIX_ENV=test mix compile --warnings-as-errors
+
+      - name: Run tests
+        run: mix test
+
+      # Catches broken doc references and extras before a release.
+      - name: Build docs
+        if: matrix.primary
+        run: mix docs --warnings-as-errors
