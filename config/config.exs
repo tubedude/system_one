@@ -1,7 +1,7 @@
 import Config
 
-# The bench environment builds ONNX Runtime with CUDA so bench/ can compare
-# CPU and GPU. A CUDA build still runs on the CPU.
-if config_env() == :bench do
-  config :ortex, Ortex.Native, features: ["cuda"]
-end
+# Do not reserve most of the GPU up front. Other processes, such as a desktop,
+# may already use part of it.
+config :exla, :clients,
+  cuda: [platform: :cuda, preallocate: false],
+  host: [platform: :host]

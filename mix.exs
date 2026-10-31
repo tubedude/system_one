@@ -29,8 +29,9 @@ defmodule SystemOne.MixProject do
     [
       {:jason, "~> 1.4"},
       {:nimble_options, "~> 1.1"},
-      {:nx, "~> 0.10"},
-      {:ortex, "~> 0.1.10"},
+      {:nx, "~> 1.0"},
+      {:transmuter, "~> 2.0"},
+      {:exla, "~> 1.0"},
       {:req, "~> 0.5"},
       {:telemetry, "~> 1.0"},
       {:tokenizers, "~> 0.5"},
@@ -61,6 +62,7 @@ defmodule SystemOne.MixProject do
         "guides/deployment.md",
         "CHANGELOG.md",
         "bench/README.md": [title: "Benchmarks"],
+        "bench/transmuter/REPORT.md": [title: "Transmuter vs Ortex"],
         LICENSE: [title: "License"],
         "usage-rules.md": [title: "LLM usage rules"],
         "notebooks/getting_started.livemd": [title: "Interactive Laya notebook"]

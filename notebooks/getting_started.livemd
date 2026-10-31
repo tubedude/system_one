@@ -138,6 +138,5 @@ case SystemOne.query(name, query) do
 end
 ```
 
-For CUDA, complete the repository's GPU guide first, rebuild Ortex with CUDA
-support, and change the providers to `[:cuda, :cpu]`. A `:ready` status alone
-does not prove that the CUDA provider loaded.
+For CUDA, complete the repository's GPU guide first, rebuild EXLA with CUDA
+support, and change the providers to `[:cuda]`.

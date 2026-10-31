@@ -6,7 +6,8 @@
 $ MIX_ENV=bench mix run bench/laya.exs
 ```
 
-The `bench` environment builds Ortex with CUDA. Follow
+These results were taken with Ortex, before the move to Transmuter. See
+[the Transmuter report](transmuter/REPORT.md) for a direct comparison. Follow
 [the GPU guide](../guides/gpu.md) first. It runs on CUDA only by default;
 set `PROVIDERS=cuda,cpu` to also measure the CPU.
 

@@ -16,7 +16,7 @@ defmodule SystemOne do
     ],
     execution_providers: [
       type: {:list, :atom},
-      doc: "ONNX Runtime execution providers, in order of preference, such as `[:cuda, :cpu]`."
+      doc: "Where the model runs, such as `[:cuda]` or `[:cpu]`. Laya uses the first entry."
     ],
     batch_size: [
       type: :pos_integer,

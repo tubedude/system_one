@@ -5,7 +5,14 @@ Supervised serving of small local decision models with Nx.
 SystemOne asks a model typed questions about your application data and
 returns probabilities. Queries are batched by `Nx.Serving` and run on your
 machine. The first supported model is
-[Laya](https://huggingface.co/receptron/laya-onnx), served with ONNX Runtime.
+[Laya](https://huggingface.co/receptron/laya-onnx), served with
+[Transmuter](https://hexdocs.pm/transmuter) on EXLA.
+
+> #### Experimental branch {: .warning}
+>
+> This branch replaces Ortex with Transmuter. See
+> [the comparison report](bench/transmuter/REPORT.md). The last Ortex version
+> is the `ortex` tag.
 
 ## Installation
 

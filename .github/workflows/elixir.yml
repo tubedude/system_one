@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+# Runners have no GPU, so build EXLA for the CPU only.
+env:
+  EXLA_CPU_ONLY: "1"
+  XLA_TARGET: cpu
+
 jobs:
   audit:
     name: Security advisories
@@ -59,20 +64,16 @@ jobs:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
-      # Ortex has no precompiled NIF, so it builds from Rust source.
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.96.1
-
-      # _build holds the compiled Ortex NIF, which is the slow part.
+      # _build holds the compiled EXLA NIF, which is the slow part.
       - name: Restore deps and _build cache
         uses: actions/cache@v5
         with:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          key: ${{ runner.os }}-mix-exla-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
+            ${{ runner.os }}-mix-exla-${{ matrix.otp }}-${{ matrix.elixir }}-
 
       - name: Install dependencies
         run: mix deps.get

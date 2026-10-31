@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased (transmuter branch)
+
+  * Laya runs on Nx 1.0 and EXLA through Transmuter instead of Ortex. The
+    Rust toolchain is no longer needed to build.
+  * `:execution_providers` now picks the EXLA client: `:cuda` or `:cpu`.
+  * The first query of each new input shape compiles the graph.
+
 ## v0.1.1 (2026-10-31)
 
   * Added `SystemOne.preview/2` and `SystemOne.Models.Laya.preview/2` for CPU-only

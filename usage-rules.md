@@ -14,8 +14,9 @@ answers into booleans.
 - Add one `{SystemOne, ...}` child per model instance. `:name` must be a unique
   atom and is the handle passed to every public function.
 - Laya uses `execution_providers: [:cpu]` by default. Do not add `:cuda`
-  unless Ortex was built with CUDA support and the required runtime libraries
-  are present.
+  unless EXLA was built with CUDA support and the required runtime libraries
+  are present. The first query of each new input shape compiles the graph,
+  which takes seconds on the CPU and about 30 seconds on a GPU.
 
 ```elixir
 children = [

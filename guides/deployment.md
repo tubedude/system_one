@@ -79,7 +79,7 @@ Two common approaches are:
 The first is self-contained but adds about 1.6 GB to the image. The second
 keeps images smaller but makes model provisioning an external dependency.
 Whichever approach you choose, verify that the final image contains the
-native libraries required by Ortex and Tokenizers. For CUDA, also reproduce
+native libraries required by EXLA and Tokenizers. For CUDA, also reproduce
 the runtime library path described in the GPU guide.
 
 ## Startup and health checks

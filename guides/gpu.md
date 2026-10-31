@@ -1,146 +1,105 @@
 # Running on a GPU
 
-SystemOne runs models with ONNX Runtime through
-[Ortex](https://hexdocs.pm/ortex). By default Ortex is built for the CPU
-only. To run on an NVIDIA GPU, you need three things:
+SystemOne runs Laya with [Transmuter](https://hexdocs.pm/transmuter) on
+[EXLA](https://hexdocs.pm/exla). EXLA picks its build target when it compiles:
 
-  1. An ONNX Runtime build with the CUDA execution provider.
-  2. The CUDA 12 and cuDNN 9 libraries.
-  3. `execution_providers: [:cuda, :cpu]` on the SystemOne instance.
+  * With `EXLA_CPU_ONLY=1`, it builds for the CPU only.
+  * Without it, it builds for CUDA whenever `nvcc` is on the `PATH`. Setting
+    `XLA_TARGET=cpu` alone does not stop this.
 
-This guide covers Linux and WSL2. The steps are the same, except for the
-driver.
+For a CPU build on a machine that has CUDA installed, set both variables on
+every build, in every Mix environment:
 
-> This guide is version-specific. It was written for Ortex 0.1.10, ONNX
-> Runtime 1.19.2, CUDA 12.6, and cuDNN 9. Recheck Ortex and ONNX Runtime
-> compatibility before changing any of those versions.
+```console
+$ export EXLA_CPU_ONLY=1 XLA_TARGET=cpu
+```
+
+The `xla` and `exla` packages keep one shared build cache for all Mix
+environments, and that cache does not record whether it holds a CPU or a CUDA
+build. A single build with only one of the two variables set can replace the
+CPU build with a CUDA one. The CUDA build then fails to load with
+`libnccl.so.2: cannot open shared object file`.
+
+This guide covers Linux and WSL2. It was tested with EXLA 1.0.0, XLA 0.10.0,
+CUDA 12.6, and an RTX 3060 Ti on WSL2.
 
 ## 1. Driver
 
 On Linux, install the NVIDIA driver as usual.
 
 On WSL2, install the driver **on Windows only**. Do not install a Linux
-driver inside WSL. Windows exposes the GPU to WSL through
-`/usr/lib/wsl/lib/libcuda.so`. Check that WSL can see the GPU:
+driver inside WSL. Check that WSL can see the GPU:
 
 ```console
 $ nvidia-smi
 ```
 
-## 2. CUDA and cuDNN libraries
+## 2. CUDA libraries
 
-The CUDA provider of ONNX Runtime 1.19 loads these libraries:
-
-  * `libcudart.so.12`, `libcublas.so.12`, `libcublasLt.so.12`
-  * `libcufft.so.11`, `libcurand.so.10`
-  * `libcudnn.so.9`
-
-On Ubuntu, add NVIDIA's CUDA repository (on WSL, use the "WSL-Ubuntu"
-distribution, which has no driver package), then install:
+Install the CUDA 12 toolkit. The CUDA build of EXLA also loads libraries that
+the toolkit does not ship. The simplest source is NVIDIA's pip wheels,
+installed into a local folder:
 
 ```console
-$ sudo apt install cuda-toolkit-12-6 cudnn9-cuda-12
+$ pip3 install --target ~/.cache/exla-cuda-libs \
+    nvidia-nccl-cu12 "nvidia-cudnn-cu12==9.*" "nvidia-nvshmem-cu12==3.*" \
+    "nvidia-cuda-nvrtc-cu12==12.9.*" nvidia-cusparse-cu12 "nvidia-nvjitlink-cu12==12.9.*"
 ```
 
-## 3. ONNX Runtime with CUDA
-
-Ortex 0.1.10 uses `ort` 2.0.0-rc.8, which expects ONNX Runtime 1.19.2. The
-prebuilt CUDA binaries that `ort` used to download are no longer published,
-so use the official release instead:
+The NVSHMEM wheel names its InfiniBand transport `.so.7`, but EXLA asks for
+`.so.3`. A single GPU never uses that transport, so a symlink is enough:
 
 ```console
-$ mkdir -p ~/.cache/onnxruntime && cd ~/.cache/onnxruntime
-$ curl -L https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-gpu-1.19.2.tgz | tar xz
+$ cd ~/.cache/exla-cuda-libs/nvidia/nvshmem/lib
+$ ln -s nvshmem_transport_ibrc.so.7 nvshmem_transport_ibrc.so.3
 ```
 
-Enable the `cuda` feature of Ortex in your application's config:
-
-```elixir
-# config/config.exs
-config :ortex, Ortex.Native, features: ["cuda"]
-```
-
-Then build Ortex against the downloaded runtime:
+## 3. Build EXLA for CUDA
 
 ```console
-$ export ORT_STRATEGY=system
-$ export ORT_LIB_LOCATION=~/.cache/onnxruntime/onnxruntime-linux-x64-gpu-1.19.2/lib
-$ export ORT_PREFER_DYNAMIC_LINK=1
-$ mix deps.compile ortex --force
+$ export XLA_TARGET=cuda12
+$ mix deps.compile exla --force
 ```
-
-These variables are only needed at build time.
 
 ## 4. Run
 
-At run time, the dynamic loader must find the CUDA provider of ONNX Runtime
-and the libraries it loads:
+The dynamic loader must find the libraries from step 2:
 
 ```console
-$ export LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda-12.6/lib64:~/.cache/onnxruntime/onnxruntime-linux-x64-gpu-1.19.2/lib:$LD_LIBRARY_PATH
+$ export LD_LIBRARY_PATH=$(find ~/.cache/exla-cuda-libs/nvidia -maxdepth 2 -type d -name lib | tr '\n' ':')/usr/local/cuda/targets/x86_64-linux/lib:/usr/lib/wsl/lib
 ```
 
-On plain Linux, leave out `/usr/lib/wsl/lib`.
+On plain Linux, leave out `/usr/lib/wsl/lib`. In a release, set this in
+`rel/env.sh.eex`. Check that nothing is missing:
 
-Set this in your shell profile, not only in one terminal. The Ortex build
-finds `libonnxruntime.so` without it, so the application starts normally.
-Only the CUDA provider is missing, and the model silently runs on the CPU.
-This happens whenever the server is restarted from a shell without the
-variable.
-
-For zsh, in `~/.zshrc`:
-
-```zsh
-typeset -T LD_LIBRARY_PATH ld_library_path
-typeset -U ld_library_path LD_LIBRARY_PATH
-ld_library_path=(/usr/lib/wsl/lib /usr/local/cuda-12.6/lib64 $ld_library_path)
-ld_library_path+=($HOME/.cache/onnxruntime/onnxruntime-linux-x64-gpu-1.19.2/lib)
-export LD_LIBRARY_PATH
+```console
+$ ldd _build/prod/lib/exla/priv/libexla.so | grep "not found"
 ```
 
-For bash, add the `export` line above to `~/.bashrc`. In a release, set
-`LD_LIBRARY_PATH` in `rel/env.sh.eex`.
+By default, XLA reserves most of the GPU memory when it starts. If another
+process already uses part of the GPU, queries can fail with
+`CUDA_ERROR_OUT_OF_MEMORY`. Turn preallocation off in your application:
 
-If cuDNN or cuRAND is not installed system-wide, copy `libcudnn*.so.9` and
-`libcurand.so.10` into the ONNX Runtime `lib` directory. Keep that directory
-last in the path, so other GPU tools still find their own cuDNN first.
+```elixir
+# config/config.exs
+config :exla, :clients,
+  cuda: [platform: :cuda, preallocate: false],
+  host: [platform: :host]
+```
 
-Start the instance with CUDA first and the CPU as a fallback:
+Start the instance on CUDA:
 
 ```elixir
 {SystemOne,
  name: MyApp.SystemOne,
  model: SystemOne.Models.Laya,
  model_dir: "priv/models/laya",
- execution_providers: [:cuda, :cpu]}
+ execution_providers: [:cuda]}
 ```
 
-## Checking that the GPU is used
+## Compile time
 
-If the CUDA provider cannot load, ONNX Runtime falls back to the CPU and
-logs nothing. `SystemOne.status/1` still reports `:ready`, and queries
-still work, only 15 to 45 times slower.
-
-Check these three things after the model loads:
-
-  * GPU memory grows by about 2 GB:
-
-    ```console
-    $ nvidia-smi --query-gpu=memory.used --format=csv
-    ```
-
-  * The BEAM process has the CUDA provider loaded. Replace `PID` with the
-    process id of your application:
-
-    ```console
-    $ grep -o "/.*providers_cuda.so" /proc/PID/maps | sort -u
-    ```
-
-  * The process uses little RAM. On the CPU, Laya adds about 1.6 GB of
-    resident memory; on the GPU it does not.
-
-If the CUDA provider is missing, find the library it cannot load:
-
-```console
-$ ldd ~/.cache/onnxruntime/onnxruntime-linux-x64-gpu-1.19.2/lib/libonnxruntime_providers_cuda.so | grep "not found"
-```
+Transmuter compiles the graph once for each input shape. On a GPU, each shape
+takes about 30 seconds the first time. Laya pads batches to a few row counts
+and four sequence lengths, so the first queries after a restart are slow.
+Later queries of the same shape take tens of milliseconds.

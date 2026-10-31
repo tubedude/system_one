@@ -3,7 +3,9 @@ defmodule SystemOne.Models.Laya do
   Serves the [Laya](https://huggingface.co/receptron/laya-onnx) ONNX model.
 
   Laya is a small encoder that answers `:choice`, `:score`, and `:noul`
-  questions in one forward pass. It runs on ONNX Runtime through Ortex.
+  questions in one forward pass. It runs on Nx with EXLA through
+  [Transmuter](https://hexdocs.pm/transmuter), which executes the ONNX graph
+  directly.
 
   Install the bundle first:
 
@@ -19,7 +21,8 @@ defmodule SystemOne.Models.Laya do
   ## Options
 
     * `:model_dir` - required. The installed bundle directory.
-    * `:execution_providers` - defaults to `[:cpu]`. See the
+    * `:execution_providers` - defaults to `[:cpu]`. The first entry picks the
+      EXLA client: `:cuda` runs on the GPU and `:cpu` on the host. See the
       [GPU guide](gpu.md) to use `:cuda`.
     * `:batch_size` - defaults to `64`.
     * `:batch_timeout` - defaults to `10` milliseconds.
@@ -46,6 +49,14 @@ defmodule SystemOne.Models.Laya do
   limit first.
 
   Each answer has `:act_probability` in its metadata.
+
+  ## Compilation
+
+  The graph is compiled once for each input shape and then cached. A batch is
+  padded to the next power of two in rows and to one of the sequence lengths
+  64, 128, 256, or 512. So the first query of each new shape is slow: about 3
+  seconds on the CPU and about 30 seconds on a GPU. Later queries of the same
+  shape are fast.
   """
 
   @behaviour SystemOne.Model
@@ -110,21 +121,23 @@ defmodule SystemOne.Models.Laya do
          {:ok, tokenizer} <-
            Tokenizers.Tokenizer.from_file(Path.join(directory, "tokenizer/tokenizer.json")),
          {:ok, ids} <- special_ids(tokenizer) do
+      client = exla_client(Keyword.get(opts, :execution_providers, [:cpu]))
+      batch_size = Keyword.get(opts, :batch_size, 64)
+
       model =
-        Ortex.load(
-          Path.join(directory, "laya.onnx"),
-          Keyword.get(opts, :execution_providers, [:cpu])
+        Transmuter.load!(Path.join(directory, "laya.onnx"),
+          backend: {EXLA.Backend, client: client}
         )
 
       runtime = %{config: config, tokenizer: tokenizer, ids: ids}
 
       serving =
-        Nx.Serving.new(Ortex.Serving, model)
+        Nx.Serving.new(fn _defn_options -> init_run(model, client, config, batch_size) end)
         |> Nx.Serving.client_preprocessing(&preprocess(&1, runtime))
         |> Nx.Serving.client_postprocessing(&postprocess/2)
 
       serving_opts = [
-        batch_size: Keyword.get(opts, :batch_size, 64),
+        batch_size: batch_size,
         batch_timeout: Keyword.get(opts, :batch_timeout, 10),
         batch_keys: batch_keys(config.max_len),
         preview: fn query -> preview(query, runtime) end
@@ -246,6 +259,65 @@ defmodule SystemOne.Models.Laya do
     if length(Sequence.render_options(question)) <= @max_options,
       do: :ok,
       else: {:error, "question #{inspect(id)} has more than #{@max_options} options"}
+  end
+
+  defp exla_client([:cuda | _]), do: :cuda
+  defp exla_client([:cpu | _]), do: :host
+  defp exla_client([]), do: :host
+
+  defp exla_client([other | _]),
+    do: raise(ArgumentError, "unsupported execution provider #{inspect(other)}")
+
+  # Compiles the graph from a template of the smallest shape. Transmuter caches
+  # one compiled program per input shape, so the same run handles every padded
+  # shape that reaches it.
+  defp init_run(model, client, config, batch_size) do
+    shapes = length(row_buckets(batch_size)) * length(batch_keys(config.max_len))
+    template = model_inputs(template_tuple(1, hd(batch_keys(config.max_len))))
+
+    run =
+      Transmuter.compile(model, template,
+        compiler: EXLA,
+        client: client,
+        cache_size: max(8, shapes)
+      )
+
+    fn batch ->
+      size = batch.size
+      rows = Enum.find(row_buckets(batch_size), batch_size, &(&1 >= size))
+      batch = Nx.Batch.pad(batch, rows - size)
+      tensors = Nx.Defn.jit_apply(& &1, [batch], compiler: Nx.Defn.Evaluator)
+      outputs = run.(model_inputs(tensors))
+
+      {outputs["logits"][0..(size - 1)//1], outputs["act_probs"][0..(size - 1)//1]}
+      |> Nx.backend_transfer(Nx.BinaryBackend)
+    end
+  end
+
+  defp model_inputs({ids, attention, markers, marker_mask, qtypes}) do
+    %{
+      "input_ids" => ids,
+      "attention_mask" => attention,
+      "marker_pos" => markers,
+      "marker_mask" => marker_mask,
+      "qtype" => qtypes
+    }
+  end
+
+  defp template_tuple(rows, len) do
+    {
+      Nx.broadcast(Nx.tensor(0, type: {:s, 64}), {rows, len}),
+      Nx.broadcast(Nx.tensor(1, type: {:s, 64}), {rows, len}),
+      Nx.broadcast(Nx.tensor(0, type: {:s, 64}), {rows, @max_options}),
+      Nx.broadcast(Nx.tensor(0, type: {:u, 8}), {rows, @max_options}),
+      Nx.broadcast(Nx.tensor(0, type: {:s, 64}), {rows})
+    }
+  end
+
+  defp row_buckets(batch_size) do
+    Stream.iterate(1, &(&1 * 2))
+    |> Enum.take_while(&(&1 < batch_size))
+    |> Kernel.++([batch_size])
   end
 
   defp bundle_dir(opts) do
