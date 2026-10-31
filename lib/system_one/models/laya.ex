@@ -50,7 +50,7 @@ defmodule SystemOne.Models.Laya do
 
   @behaviour SystemOne.Model
 
-  alias SystemOne.{Answer, Query, Result}
+  alias SystemOne.{Answer, Preview, Query, Result}
   alias SystemOne.Bundle.Manifest
   alias SystemOne.Models.Laya.Sequence
 
@@ -126,11 +126,126 @@ defmodule SystemOne.Models.Laya do
       serving_opts = [
         batch_size: Keyword.get(opts, :batch_size, 64),
         batch_timeout: Keyword.get(opts, :batch_timeout, 10),
-        batch_keys: batch_keys(config.max_len)
+        batch_keys: batch_keys(config.max_len),
+        preview: fn query -> preview(query, runtime) end
       ]
 
       {:ok, serving, serving_opts}
     end
+  end
+
+  @doc """
+  Previews token usage and sequence layout for `query` with Laya.
+
+  Calculates token budgets, limits, and truncation on the CPU without loading
+  model weights or touching the GPU.
+
+  `opts` accepts:
+    * `:model_dir` - the bundle directory containing `tokenizer/` and `laya_config.json`.
+    * `:runtime` - an internal runtime map with preloaded config and tokenizer.
+  """
+  @impl true
+  def preview(query, opts)
+
+  def preview(%Query{} = query, opts) when is_list(opts) do
+    case Keyword.get(opts, :runtime) do
+      %{config: _, tokenizer: _, ids: _} = runtime ->
+        preview(query, runtime)
+
+      nil ->
+        with {:ok, directory} <- preview_bundle_dir(opts),
+             {:ok, config} <- read_config(directory),
+             {:ok, tokenizer} <-
+               Tokenizers.Tokenizer.from_file(Path.join(directory, "tokenizer/tokenizer.json")),
+             {:ok, ids} <- special_ids(tokenizer) do
+          preview(query, %{config: config, tokenizer: tokenizer, ids: ids})
+        end
+    end
+  end
+
+  def preview(%Query{questions: []}, _runtime),
+    do: {:error, {:invalid_query, "at least one question is required"}}
+
+  def preview(%Query{questions: questions}, _runtime) when length(questions) > @max_questions,
+    do: {:error, {:invalid_query, "Laya accepts at most #{@max_questions} questions"}}
+
+  def preview(%Query{state: state, questions: questions}, runtime) when is_map(runtime) do
+    with {:ok, serialized_state} <- Sequence.serialize_state(state) do
+      state_ids =
+        encode(runtime.tokenizer, Sequence.scrub(serialized_state, runtime.ids.mask_token))
+
+      with {:ok, question_previews} <-
+             preview_questions(questions, state_ids, runtime) do
+        longest = Enum.map(question_previews, & &1.total_tokens) |> Enum.max()
+
+        target_len =
+          Enum.find(batch_keys(runtime.config.max_len), runtime.config.max_len, &(&1 >= longest))
+
+        total_tokens = Enum.sum(Enum.map(question_previews, & &1.total_tokens))
+        truncated? = Enum.any?(question_previews, & &1.truncated?)
+
+        preview = %Preview{
+          total_tokens: total_tokens,
+          target_sequence_length: target_len,
+          truncated?: truncated?,
+          questions: Map.new(question_previews, &{&1.question_id, &1}),
+          ordered_questions: question_previews
+        }
+
+        {:ok, preview}
+      end
+    else
+      {:error, reason} ->
+        {:error, {:invalid_query, reason}}
+    end
+  end
+
+  defp preview_bundle_dir(opts) do
+    required = ["laya_config.json", "tokenizer/tokenizer.json"]
+
+    case Keyword.get(opts, :model_dir) do
+      directory when is_binary(directory) and directory != "" ->
+        missing = Enum.reject(required, &File.regular?(Path.join(directory, &1)))
+        if missing == [], do: {:ok, directory}, else: {:error, {:missing_bundle_files, missing}}
+
+      _ ->
+        {:error, :model_dir_required}
+    end
+  end
+
+  defp preview_questions(questions, state_ids, runtime) do
+    Enum.reduce_while(questions, {:ok, []}, fn raw, {:ok, acc} ->
+      case preview_question(raw, state_ids, runtime) do
+        {:ok, preview} ->
+          {:cont, {:ok, [preview | acc]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:invalid_query, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp preview_question(raw, state_ids, runtime) do
+    with {:ok, question} <- Sequence.normalize(raw),
+         :ok <- check_option_count(raw.id, question) do
+      Sequence.preview(
+        &encode(runtime.tokenizer, &1),
+        question,
+        state_ids,
+        runtime.ids,
+        runtime.config
+      )
+    end
+  end
+
+  defp check_option_count(id, question) do
+    if length(Sequence.render_options(question)) <= @max_options,
+      do: :ok,
+      else: {:error, "question #{inspect(id)} has more than #{@max_options} options"}
   end
 
   defp bundle_dir(opts) do

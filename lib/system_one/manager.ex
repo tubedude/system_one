@@ -14,6 +14,7 @@ defmodule SystemOne.Manager do
   def await_ready(name, timeout), do: GenServer.call(name, {:await_ready, timeout}, :infinity)
   def reload(name, overrides), do: GenServer.call(name, {:reload, overrides}, :infinity)
   def stop(name), do: GenServer.call(name, :stop)
+  def preview(name, query), do: GenServer.call(name, {:preview, query})
 
   @impl true
   def init(opts) do
@@ -31,7 +32,8 @@ defmodule SystemOne.Manager do
       error: nil,
       status: :loading,
       subscribers: %{},
-      waiters: %{}
+      waiters: %{},
+      preview_fn: nil
     }
 
     {:ok, state, {:continue, :load}}
@@ -51,6 +53,17 @@ defmodule SystemOne.Manager do
   end
 
   def handle_call(:serving, _from, state), do: {:reply, {:error, unavailable(state)}, state}
+
+  def handle_call({:preview, query}, _from, %{status: :ready} = state) do
+    if state.preview_fn do
+      {:reply, state.preview_fn.(query), state}
+    else
+      {:reply, {:error, :preview_not_supported}, state}
+    end
+  end
+
+  def handle_call({:preview, _query}, _from, state),
+    do: {:reply, {:error, {:unavailable, unavailable(state)}}, state}
 
   def handle_call({:subscribe, pid}, _from, state) do
     state =
@@ -189,14 +202,39 @@ defmodule SystemOne.Manager do
 
   defp finish_load(state, serving, serving_opts) do
     state = terminate_serving(state)
+    {preview_fn, serving_opts} = Keyword.pop(serving_opts, :preview)
+
+    preview_fn =
+      case preview_fn do
+        fun when is_function(fun, 1) ->
+          fun
+
+        nil ->
+          if function_exported?(state.model, :preview, 2) do
+            opts = model_opts(state.opts)
+            fn query -> state.model.preview(query, opts) end
+          else
+            nil
+          end
+      end
 
     case start_serving(state, serving, serving_opts) do
       {:ok, pid} ->
+        if preview_fn do
+          :persistent_term.put({SystemOne, state.name, :preview}, preview_fn)
+        end
+
         ref = Process.monitor(pid)
 
         state =
           state
-          |> Map.merge(%{serving_pid: pid, serving_ref: ref, status: :ready, error: nil})
+          |> Map.merge(%{
+            serving_pid: pid,
+            serving_ref: ref,
+            status: :ready,
+            error: nil,
+            preview_fn: preview_fn
+          })
           |> reply_reload(:ok)
           |> settle_waiters_with_status()
           |> notify()
@@ -216,12 +254,16 @@ defmodule SystemOne.Manager do
     |> then(&DynamicSupervisor.start_child(state.serving_supervisor, &1))
   end
 
-  defp terminate_serving(%{serving_pid: nil} = state), do: state
+  defp terminate_serving(%{serving_pid: nil} = state) do
+    :persistent_term.erase({SystemOne, state.name, :preview})
+    %{state | preview_fn: nil}
+  end
 
   defp terminate_serving(state) do
+    :persistent_term.erase({SystemOne, state.name, :preview})
     if state.serving_ref, do: Process.demonitor(state.serving_ref, [:flush])
     _ = DynamicSupervisor.terminate_child(state.serving_supervisor, state.serving_pid)
-    %{state | serving_pid: nil, serving_ref: nil}
+    %{state | serving_pid: nil, serving_ref: nil, preview_fn: nil}
   end
 
   defp cancel_load(%{load_pid: nil} = state, _reason), do: state
@@ -283,4 +325,10 @@ defmodule SystemOne.Manager do
 
   defp unavailable(%{status: :failed, error: reason}), do: {:failed, reason}
   defp unavailable(%{status: status}), do: status
+
+  @impl true
+  def terminate(_reason, state) do
+    :persistent_term.erase({SystemOne, state.name, :preview})
+    :ok
+  end
 end

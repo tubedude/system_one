@@ -48,5 +48,14 @@ defmodule SystemOne.Model do
   """
   @callback bundle_schema() :: pos_integer()
 
-  @optional_callbacks manifest: 1, model_name: 0, bundle_schema: 0
+  @doc """
+  Previews token usage and sequence layout for `query`.
+
+  Optional. If implemented, allows `SystemOne.preview/2` to preview token usage
+  for queries without running model inference.
+  """
+  @callback preview(query :: SystemOne.Query.t(), opts :: keyword() | map()) ::
+              {:ok, SystemOne.Preview.t()} | {:error, term()}
+
+  @optional_callbacks manifest: 1, model_name: 0, bundle_schema: 0, preview: 2
 end

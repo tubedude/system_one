@@ -63,7 +63,7 @@ defmodule SystemOne do
 
   """
 
-  alias SystemOne.{Manager, Query, Status}
+  alias SystemOne.{Manager, Preview, Query, Status}
 
   @reload_schema @option_schema
                  |> Keyword.delete(:name)
@@ -137,6 +137,43 @@ defmodule SystemOne do
       result = run_query(name, query)
       {result, Map.put(metadata, :status, status_for(result))}
     end)
+  end
+
+  @doc """
+  Previews token usage and sequence layout for `query` on the instance `name`.
+
+  Runs tokenization on the CPU using the instance's loaded tokenizer and
+  configuration, without performing model inference or touching the GPU.
+
+  Returns `{:ok, %SystemOne.Preview{}}` or `{:error, reason}`.
+
+  ## Examples
+
+      query =
+        SystemOne.Query.new(%{message: "Hello"}, [
+          SystemOne.Question.new(:greeting, :noul, "Is this a greeting?")
+        ])
+
+      {:ok, preview} = SystemOne.preview(MyApp.SystemOne, query)
+      preview.total_tokens
+      #=> 24
+
+      preview.questions[:greeting].header_tokens
+      #=> 17
+
+      preview.questions[:greeting].truncated?
+      #=> false
+
+  """
+  @spec preview(name(), Query.t()) :: {:ok, Preview.t()} | {:error, term()}
+  def preview(name, %Query{} = query) do
+    case :persistent_term.get({SystemOne, name, :preview}, nil) do
+      preview_fn when is_function(preview_fn, 1) ->
+        preview_fn.(query)
+
+      nil ->
+        Manager.preview(name, query)
+    end
   end
 
   @doc """

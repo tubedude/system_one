@@ -1,8 +1,19 @@
 defmodule SystemOneTest do
   use ExUnit.Case, async: false
 
-  alias SystemOne.{Query, Question, Status}
-  alias SystemOne.TestModels.{Alpha, Beta, Crashing, Exploding, Failing, Invalid, Slow, Strict}
+  alias SystemOne.{Preview, Query, Question, Status}
+
+  alias SystemOne.TestModels.{
+    Alpha,
+    Beta,
+    Crashing,
+    Exploding,
+    Failing,
+    Invalid,
+    Slow,
+    Strict,
+    WithPreview
+  }
 
   test "validates required child options" do
     assert_raise NimbleOptions.ValidationError, fn ->
@@ -112,6 +123,12 @@ defmodule SystemOneTest do
 
     assert_receive {:system_one, ^name, %Status{state: :ready}}
 
+    receive do
+      {:system_one, ^name, %Status{state: :loading}} -> :ok
+    after
+      0 -> :ok
+    end
+
     assert :ok = SystemOne.unsubscribe(name)
     assert :ok = SystemOne.unsubscribe(name)
     assert :ok = SystemOne.reload(name, model: Beta)
@@ -175,6 +192,53 @@ defmodule SystemOneTest do
     Process.exit(pid, :kill)
 
     assert_receive {:system_one, ^name, %Status{state: :failed, error: {:serving_exit, :killed}}}
+  end
+
+  test "preview returns token estimation for preview-capable models" do
+    name = Module.concat(__MODULE__, PreviewSupported)
+    start_supervised!({SystemOne, name: name, model: WithPreview})
+    assert_eventually_ready(name)
+
+    query =
+      Query.new(%{message: "hello"}, [
+        Question.new(:first, :noul, "Safe?"),
+        Question.new(:second, :choice, "Route?", criteria: ["a", "b"])
+      ])
+
+    assert {:ok, %Preview{} = preview} = SystemOne.preview(name, query)
+    assert preview.total_tokens == 84
+    assert preview.target_sequence_length == 64
+    assert preview.truncated? == false
+    assert preview.questions[:first].header_tokens == 10
+    assert preview.questions[:second].header_tokens == 10
+    assert length(preview.ordered_questions) == 2
+    assert Enum.map(preview.ordered_questions, & &1.question_id) == [:first, :second]
+  end
+
+  test "preview returns error when model does not support preview" do
+    name = Module.concat(__MODULE__, PreviewUnsupported)
+    start_supervised!({SystemOne, name: name, model: Alpha})
+    assert_eventually_ready(name)
+
+    query = Query.new("state", [Question.new(:q, :noul, "Question?")])
+    assert {:error, :preview_not_supported} = SystemOne.preview(name, query)
+  end
+
+  test "preview returns unavailable when instance is stopped or failed" do
+    stopped_name = Module.concat(__MODULE__, PreviewStopped)
+    start_supervised!({SystemOne, name: stopped_name, model: WithPreview})
+    assert_eventually_ready(stopped_name)
+    assert :ok = SystemOne.stop(stopped_name)
+
+    query = Query.new("state", [Question.new(:q, :noul, "Question?")])
+    assert {:error, {:unavailable, :stopped}} = SystemOne.preview(stopped_name, query)
+
+    failed_name = Module.concat(__MODULE__, PreviewFailed)
+    start_supervised!({SystemOne, name: failed_name, model: Failing})
+    assert %Status{state: :failed} = await_status(failed_name, :failed)
+
+    assert {:error, {:unavailable, {:failed, :cannot_load}}} =
+             SystemOne.preview(failed_name, query)
   end
 
   defp assert_eventually_ready(name),

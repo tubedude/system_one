@@ -60,6 +60,9 @@ children = [
   may be shortened further. Serialized state uses the remaining tokens and is
   silently truncated.
 - `result.usage.input_tokens` is the post-truncation total across questions.
+- To inspect token allocations and truncation before querying (e.g. in a UI),
+  call `SystemOne.preview(name, query)`. It runs on the CPU without GPU or model
+  inference. For offline preview, call `SystemOne.Models.Laya.preview(query, model_dir: path)`.
 - There is no pre-tokenization byte limit. Enforce application request-size
   limits before constructing queries from untrusted input.
 

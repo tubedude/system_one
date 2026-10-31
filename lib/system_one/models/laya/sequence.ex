@@ -56,6 +56,62 @@ defmodule SystemOne.Models.Laya.Sequence do
           {:ok, %{ids: [non_neg_integer()], markers: [non_neg_integer()]}}
           | {:error, String.t()}
   def build(encode, question, state, special_ids, config) do
+    with {:ok, header} <- header(encode, question, special_ids, config),
+         {:ok, serialized_state} <- serialize_state(state) do
+      state_ids =
+        encode.(scrub(serialized_state, special_ids.mask_token)) |> Enum.take(header.room)
+
+      ids = header.sequence ++ state_ids ++ [special_ids.sep]
+      {:ok, %{ids: ids, markers: Enum.filter(header.markers, &(&1 < config.max_len))}}
+    end
+  end
+
+  @type question_preview :: %{
+          question_id: term(),
+          type: atom(),
+          header_tokens: non_neg_integer(),
+          state_tokens: non_neg_integer(),
+          raw_state_tokens: non_neg_integer(),
+          truncated_tokens: non_neg_integer(),
+          truncated?: boolean(),
+          total_tokens: non_neg_integer(),
+          room: non_neg_integer()
+        }
+
+  @doc false
+  @spec preview(
+          (String.t() -> [non_neg_integer()]),
+          Question.t(),
+          [non_neg_integer()],
+          map(),
+          map()
+        ) :: {:ok, question_preview()} | {:error, String.t()}
+  def preview(encode, question, state_ids, special_ids, config) when is_list(state_ids) do
+    with {:ok, header} <- header(encode, question, special_ids, config) do
+      header_tokens = length(header.sequence)
+      raw_state_tokens = length(state_ids)
+      state_tokens = min(header.room, raw_state_tokens)
+      truncated_tokens = raw_state_tokens - state_tokens
+
+      {:ok,
+       %{
+         question_id: question.id,
+         type: question.type,
+         header_tokens: header_tokens,
+         state_tokens: state_tokens,
+         raw_state_tokens: raw_state_tokens,
+         truncated_tokens: truncated_tokens,
+         truncated?: truncated_tokens > 0,
+         total_tokens: header_tokens + state_tokens + 1,
+         room: header.room
+       }}
+    end
+  end
+
+  # Builds the fixed part of a sequence: [CLS] head [SEP] options... [SEP].
+  # `room` is how many state tokens fit after it, leaving one slot for the final [SEP].
+  # `build/5` and `preview/5` both use this so their token counts cannot drift apart.
+  defp header(encode, question, special_ids, config) do
     option_ids =
       question
       |> render_options()
@@ -86,14 +142,7 @@ defmodule SystemOne.Models.Laya.Sequence do
 
       sequence = sequence ++ [special_ids.sep]
       room = max(0, config.max_len - length(sequence) - 1)
-
-      with {:ok, serialized_state} <- serialize_state(state) do
-        state_ids =
-          encode.(scrub(serialized_state, special_ids.mask_token)) |> Enum.take(room)
-
-        ids = sequence ++ state_ids ++ [special_ids.sep]
-        {:ok, %{ids: ids, markers: Enum.filter(markers, &(&1 < config.max_len))}}
-      end
+      {:ok, %{sequence: sequence, markers: markers, room: room}}
     end
   end
 
@@ -120,9 +169,9 @@ defmodule SystemOne.Models.Laya.Sequence do
     min(1.0, max(0.0, 1.0 - entropy / :math.log(length(probabilities))))
   end
 
-  defp serialize_state(state) when is_binary(state), do: {:ok, state}
+  def serialize_state(state) when is_binary(state), do: {:ok, state}
 
-  defp serialize_state(state) do
+  def serialize_state(state) do
     case Jason.encode(state) do
       {:ok, encoded} -> {:ok, encoded}
       {:error, _reason} -> {:error, "state must be a string or JSON-encodable value"}
@@ -199,5 +248,5 @@ defmodule SystemOne.Models.Laya.Sequence do
     {Enum.take(head, max(8, budget)), option_ids}
   end
 
-  defp scrub(string, token), do: String.replace(string, token, " ")
+  def scrub(string, token), do: String.replace(string, token, " ")
 end

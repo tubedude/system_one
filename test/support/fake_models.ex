@@ -96,3 +96,37 @@ defmodule SystemOne.TestModels.Exploding do
     {:ok, serving, []}
   end
 end
+
+defmodule SystemOne.TestModels.WithPreview do
+  @behaviour SystemOne.Model
+
+  def load(_opts) do
+    preview_fn = fn query ->
+      questions =
+        Enum.map(query.questions, fn q ->
+          %{
+            question_id: q.id,
+            type: q.type,
+            header_tokens: 10,
+            state_tokens: 31,
+            raw_state_tokens: 31,
+            truncated_tokens: 0,
+            truncated?: false,
+            total_tokens: 42,
+            room: 50
+          }
+        end)
+
+      {:ok,
+       %SystemOne.Preview{
+         total_tokens: 42 * length(questions),
+         target_sequence_length: 64,
+         truncated?: false,
+         questions: Map.new(questions, &{&1.question_id, &1}),
+         ordered_questions: questions
+       }}
+    end
+
+    {:ok, SystemOne.TestServing.serving(:with_preview), [batch_size: 8, preview: preview_fn]}
+  end
+end

@@ -19,7 +19,7 @@ Add `system_one` to your dependencies:
 ```elixir
 def deps do
   [
-    {:system_one, "~> 0.1.0"}
+    {:system_one, "~> 0.1.1"}
   ]
 end
 ```
@@ -58,7 +58,7 @@ end
 
 defp deps do
   [
-    {:system_one, "~> 0.1.0"},
+    {:system_one, "~> 0.1.1"},
     {:usage_rules, "~> 1.1", only: :dev, runtime: false}
   ]
 end
@@ -170,6 +170,39 @@ should enforce an appropriate request-size limit before building a query.
 Invalid question counts, option counts, and value shapes return
 `{:error, {:invalid_query, message}}`. Token truncation is not an error. The
 actual post-truncation token total is available as `result.usage.input_tokens`.
+
+### Token inspection and query preview
+
+To inspect token counts, header budgets, and truncation before querying without
+executing model inference or touching the GPU, use `SystemOne.preview/2`:
+
+```elixir
+{:ok, preview} = SystemOne.preview(MyApp.SystemOne, query)
+
+preview.total_tokens
+#=> 323
+
+preview.target_sequence_length
+#=> 512
+
+preview.truncated?
+#=> true
+
+preview.questions[:sentiment].header_tokens
+#=> 38
+
+preview.questions[:sentiment].state_tokens
+#=> 284
+
+preview.questions[:sentiment].truncated_tokens
+#=> 66
+```
+
+Previews run entirely on the CPU in fractions of a millisecond using the
+instance's in-memory tokenizer. You can also run previews offline without
+starting a supervised instance via `SystemOne.Models.Laya.preview/2`, which only
+requires `tokenizer/tokenizer.json` and `laya_config.json` without loading the
+1.6 GB model weights.
 
 ## Lifecycle and observability
 

@@ -1,7 +1,7 @@
 defmodule SystemOne.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/tubedude/system_one"
 
   def project do
@@ -69,6 +69,7 @@ defmodule SystemOne.MixProject do
         Queries: [
           SystemOne.Query,
           SystemOne.Question,
+          SystemOne.Preview,
           SystemOne.Result,
           SystemOne.Answer,
           SystemOne.Status

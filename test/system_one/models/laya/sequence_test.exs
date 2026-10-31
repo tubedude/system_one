@@ -158,6 +158,67 @@ defmodule SystemOne.Models.Laya.SequenceTest do
     assert List.last(ids) == @ids.sep
   end
 
+  test "preview accurately calculates token budgets and matches build/5 total" do
+    encode = fn text -> String.to_charlist(text) end
+    question = Question.new(:urgency, :score, "How urgent?", criteria: ["low", "high"])
+    assert {:ok, normalized} = Sequence.normalize(question)
+    state = "short state"
+
+    assert {:ok, %{ids: built_ids}} =
+             Sequence.build(encode, normalized, state, @ids, @config)
+
+    assert {:ok, preview} =
+             Sequence.preview(encode, normalized, encode.(state), @ids, @config)
+
+    assert preview.question_id == :urgency
+    assert preview.type == :score
+    assert preview.truncated? == false
+    assert preview.truncated_tokens == 0
+    assert preview.state_tokens == preview.raw_state_tokens
+    assert preview.total_tokens == length(built_ids)
+    assert preview.total_tokens == preview.header_tokens + preview.state_tokens + 1
+    assert preview.room == @config.max_len - preview.header_tokens - 1
+  end
+
+  test "preview detects and measures truncation when state exceeds available room" do
+    encode = fn text -> String.to_charlist(text) end
+    question = Question.new(:sentiment, :choice, "Feeling?", criteria: ["good", "bad"])
+    assert {:ok, normalized} = Sequence.normalize(question)
+    long_state = String.duplicate("very long state text ", 20)
+
+    config = %{max_len: 64, head_max_len: 32}
+
+    assert {:ok, %{ids: built_ids}} =
+             Sequence.build(encode, normalized, long_state, @ids, config)
+
+    assert {:ok, preview} =
+             Sequence.preview(encode, normalized, encode.(long_state), @ids, config)
+
+    assert preview.truncated? == true
+    assert preview.truncated_tokens > 0
+    assert preview.state_tokens == preview.room
+    assert preview.raw_state_tokens == preview.state_tokens + preview.truncated_tokens
+    assert preview.total_tokens == length(built_ids)
+    assert preview.total_tokens == config.max_len
+  end
+
+  test "preview returns clear error for oversized options" do
+    encode = fn text -> String.to_charlist(text) end
+
+    oversized =
+      Question.new(:q, :choice, "?",
+        criteria: Enum.map(1..5, &{"option-#{&1}", String.duplicate("detail", 10)})
+      )
+
+    assert {:ok, oversized} = Sequence.normalize(oversized)
+
+    assert {:error, "options do not fit in head_max_len=4 tokens"} =
+             Sequence.preview(encode, oversized, encode.("state"), @ids, %{
+               max_len: 8,
+               head_max_len: 4
+             })
+  end
+
   defp collect_encoded(acc) do
     receive do
       {:encoded, text} -> collect_encoded([text | acc])

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.1 (2026-10-31)
+
+  * Added `SystemOne.preview/2` and `SystemOne.Models.Laya.preview/2` for CPU-only
+    pre-tokenization inspection and truncation estimation.
+  * Added `SystemOne.Preview` struct with per-question token breakdowns.
+
 ## v0.1.0 (2026-09-28)
 
 Initial release.
