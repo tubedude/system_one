@@ -8,11 +8,11 @@ machine. The first supported model is
 [Laya](https://huggingface.co/receptron/laya-onnx), served with
 [Transmuter](https://hexdocs.pm/transmuter) on EXLA.
 
-> #### Experimental branch {: .warning}
+> #### Backend change in v0.2.0 {: .info}
 >
-> This branch replaces Ortex with Transmuter. See
+> v0.2.0 replaces Ortex with Transmuter. See
 > [the comparison report](bench/transmuter/REPORT.md). The last Ortex version
-> is the `ortex` tag.
+> is v0.1.1, also tagged `ortex`.
 
 ## Installation
 
@@ -26,7 +26,7 @@ Add `system_one` to your dependencies:
 ```elixir
 def deps do
   [
-    {:system_one, "~> 0.1.1"}
+    {:system_one, "~> 0.2.0"}
   ]
 end
 ```
@@ -65,7 +65,7 @@ end
 
 defp deps do
   [
-    {:system_one, "~> 0.1.1"},
+    {:system_one, "~> 0.2.0"},
     {:usage_rules, "~> 1.1", only: :dev, runtime: false}
   ]
 end

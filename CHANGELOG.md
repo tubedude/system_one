@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased (transmuter branch)
+## v0.2.0 (2026-10-31)
+
+Breaking: SystemOne now needs Nx 1.0 and EXLA. Ortex is no longer a
+dependency. On a machine with CUDA installed, a CPU-only build needs
+`EXLA_CPU_ONLY=1` and `XLA_TARGET=cpu`. See the GPU guide.
 
   * Laya runs on Nx 1.0 and EXLA through Transmuter instead of Ortex. The
     Rust toolchain is no longer needed to build.
