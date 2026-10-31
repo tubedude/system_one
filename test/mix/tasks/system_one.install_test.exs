@@ -142,7 +142,71 @@ defmodule Mix.Tasks.SystemOne.InstallTest do
     refute File.exists?(ctx.lock)
   end
 
-  defp write_manifest(path) do
+  test "fails loudly when the install succeeds but the lock cannot be written", ctx do
+    sha = write_manifest(ctx.manifest)
+    place_files(ctx.dir)
+    blocker = Path.join(ctx.tmp_dir, "blocker")
+    File.write!(blocker, "not a directory")
+
+    assert_raise Mix.Error, ~r/lock update failed/, fn ->
+      Install.run([
+        "laya",
+        "--dir",
+        ctx.dir,
+        "--lock",
+        Path.join(blocker, "system_one_models.lock"),
+        "--manifest",
+        ctx.manifest,
+        "--manifest-sha256",
+        sha
+      ])
+    end
+  end
+
+  test "downloads and reports progress from a manifest base URL", ctx do
+    root = Path.join(ctx.tmp_dir, "www")
+    File.mkdir_p!(root)
+
+    for {file, contents} <- @contents do
+      path = Path.join(root, file)
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, contents)
+    end
+
+    {:ok, httpd} =
+      :inets.start(:httpd,
+        port: 0,
+        server_name: ~c"system_one_task_test",
+        server_root: String.to_charlist(root),
+        document_root: String.to_charlist(root),
+        bind_address: {127, 0, 0, 1},
+        mime_types: [{~c"json", ~c"text/plain"}, {~c"onnx", ~c"application/octet-stream"}]
+      )
+
+    on_exit(fn -> :inets.stop(:httpd, httpd) end)
+    [{:port, port}] = :httpd.info(httpd, [:port])
+
+    sha = write_manifest(ctx.manifest, "http://127.0.0.1:#{port}")
+
+    Install.run([
+      "laya",
+      "--dir",
+      ctx.dir,
+      "--lock",
+      ctx.lock,
+      "--manifest",
+      ctx.manifest,
+      "--manifest-sha256",
+      sha
+    ])
+
+    assert_received {:mix_shell, :info, ["Downloading laya.onnx"]}
+    assert_received {:mix_shell, :info, ["Verified laya.onnx"]}
+    assert File.read!(Path.join(ctx.dir, "laya.onnx")) == "fake-weights"
+    assert {:ok, _entry} = Lock.get(ctx.lock, "laya")
+  end
+
+  defp write_manifest(path, base_url \\ "https://models.invalid") do
     files =
       Enum.map(@contents, fn {file, contents} -> %{path: file, sha256: sha256(contents)} end)
 
@@ -150,7 +214,7 @@ defmodule Mix.Tasks.SystemOne.InstallTest do
       Manifest.encode!(%Manifest{
         model: "laya",
         version: "test",
-        base_url: "https://models.invalid",
+        base_url: base_url,
         files: files
       })
 

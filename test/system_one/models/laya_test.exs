@@ -105,6 +105,58 @@ defmodule SystemOne.Models.LayaTest do
     end
   end
 
+  describe "preview/2 limits" do
+    test "accepts exactly the maximum questions and options" do
+      runtime = mock_runtime()
+
+      max_questions = Query.new("state", Enum.map(1..64, &Question.new(&1, :noul, "?")))
+      assert {:ok, %Preview{} = preview} = Laya.preview(max_questions, runtime: runtime)
+      assert map_size(preview.questions) == 64
+      assert length(preview.ordered_questions) == 64
+
+      max_options =
+        Query.new("state", [
+          Question.new(:q, :choice, "?", criteria: Enum.map(1..20, &"o#{&1}"))
+        ])
+
+      assert {:ok, %Preview{}} = Laya.preview(max_options, runtime: runtime)
+    end
+
+    test "picks the smallest padding bucket that holds the longest question" do
+      runtime = mock_runtime()
+      short = Query.new("hi", [Question.new(:q, :noul, "?")])
+      assert {:ok, preview} = Laya.preview(short, runtime: runtime)
+      assert preview.target_sequence_length == 64
+      assert preview.questions[:q].total_tokens <= 64
+
+      medium = Query.new(String.duplicate("word ", 60), [Question.new(:q, :noul, "?")])
+      assert {:ok, preview} = Laya.preview(medium, runtime: runtime)
+      assert preview.questions[:q].total_tokens > 64
+      assert preview.target_sequence_length == 128
+    end
+
+    test "scrubs mask tokens from state and instructions" do
+      runtime = mock_runtime()
+      plain = Query.new("safe text", [Question.new(:q, :noul, "Is it?")])
+      masked = Query.new("safe [MASK] text", [Question.new(:q, :noul, "Is [MASK] it?")])
+
+      assert {:ok, plain_preview} = Laya.preview(plain, runtime: runtime)
+      assert {:ok, masked_preview} = Laya.preview(masked, runtime: runtime)
+
+      assert masked_preview.questions[:q].header_tokens >=
+               plain_preview.questions[:q].header_tokens
+
+      assert masked_preview.truncated? == false
+    end
+
+    test "rejects malformed questions with the question id" do
+      runtime = mock_runtime()
+      bad = Query.new("state", [Question.new(:q, :choice, "?", criteria: [])])
+      assert {:error, {:invalid_query, message}} = Laya.preview(bad, runtime: runtime)
+      assert message =~ "choice requires non-empty criteria"
+    end
+  end
+
   describe "preview/2 with model_dir" do
     test "validates required model directory" do
       query = Query.new("state", [Question.new(:q, :noul, "?")])
@@ -117,6 +169,25 @@ defmodule SystemOne.Models.LayaTest do
 
       assert "laya_config.json" in missing
       assert "tokenizer/tokenizer.json" in missing
+    end
+
+    @tag timeout: 300_000
+    test "preview total matches the real post-truncation input token count" do
+      name = Module.concat(__MODULE__, RealLaya)
+      start_supervised!({SystemOne, name: name, model: Laya, model_dir: "priv/models/laya"})
+      assert {:ok, _} = SystemOne.await_ready(name, timeout: 240_000)
+
+      query =
+        Query.new(%{message: String.duplicate("The server is down again! ", 40)}, [
+          Question.new(:sentiment, :choice, "How does this feel?",
+            criteria: ["positive", "neutral", "negative"]
+          ),
+          Question.new(:spam, :noul, "Is this spam?")
+        ])
+
+      assert {:ok, %Preview{} = preview} = SystemOne.preview(name, query)
+      assert {:ok, result} = SystemOne.query(name, query)
+      assert preview.total_tokens == result.usage.input_tokens
     end
 
     test "previews from local priv bundle" do

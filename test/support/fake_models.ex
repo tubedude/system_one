@@ -130,3 +130,58 @@ defmodule SystemOne.TestModels.WithPreview do
     {:ok, SystemOne.TestServing.serving(:with_preview), [batch_size: 8, preview: preview_fn]}
   end
 end
+
+defmodule SystemOne.TestModels.Throwing do
+  @behaviour SystemOne.Model
+  def load(_opts), do: throw(:load_thrown)
+end
+
+defmodule SystemOne.TestModels.Exiting do
+  @behaviour SystemOne.Model
+
+  def load(_opts) do
+    serving =
+      Nx.Serving.new(SystemOne.TestServing, :exiting)
+      |> Nx.Serving.client_preprocessing(fn _query -> exit(:query_exit) end)
+
+    {:ok, serving, []}
+  end
+end
+
+defmodule SystemOne.TestModels.BadServingOpts do
+  @behaviour SystemOne.Model
+  def load(_opts), do: {:ok, SystemOne.TestServing.serving(:bad), [not_a_serving_option: true]}
+end
+
+defmodule SystemOne.TestModels.WithPreviewCallback do
+  @behaviour SystemOne.Model
+
+  def load(_opts), do: {:ok, SystemOne.TestServing.serving(:callback_preview), [batch_size: 8]}
+
+  @impl true
+  def preview(query, opts) do
+    questions =
+      Enum.map(query.questions, fn q ->
+        %{
+          question_id: q.id,
+          type: q.type,
+          header_tokens: 5,
+          state_tokens: 5,
+          raw_state_tokens: 5,
+          truncated_tokens: 0,
+          truncated?: false,
+          total_tokens: 11,
+          room: 20
+        }
+      end)
+
+    {:ok,
+     %SystemOne.Preview{
+       total_tokens: 11 * length(questions),
+       target_sequence_length: Keyword.get(opts, :batch_size, 64),
+       truncated?: false,
+       questions: Map.new(questions, &{&1.question_id, &1}),
+       ordered_questions: questions
+     }}
+  end
+end

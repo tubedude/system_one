@@ -5,14 +5,18 @@ defmodule SystemOneTest do
 
   alias SystemOne.TestModels.{
     Alpha,
+    BadServingOpts,
     Beta,
     Crashing,
+    Exiting,
     Exploding,
     Failing,
     Invalid,
     Slow,
     Strict,
-    WithPreview
+    Throwing,
+    WithPreview,
+    WithPreviewCallback
   }
 
   test "validates required child options" do
@@ -239,6 +243,125 @@ defmodule SystemOneTest do
 
     assert {:error, {:unavailable, {:failed, :cannot_load}}} =
              SystemOne.preview(failed_name, query)
+  end
+
+  test "preview falls back to the model's preview/2 callback and to the manager" do
+    name = Module.concat(__MODULE__, PreviewCallback)
+    start_supervised!({SystemOne, name: name, model: WithPreviewCallback, batch_size: 32})
+    assert_eventually_ready(name)
+
+    query = Query.new("state", [Question.new(:q, :noul, "Question?")])
+
+    assert {:ok, %Preview{total_tokens: 11, target_sequence_length: 32}} =
+             SystemOne.preview(name, query)
+
+    # Without the fast path the manager answers from its own state.
+    :persistent_term.erase({SystemOne, name, :preview})
+    assert {:ok, %Preview{total_tokens: 11}} = SystemOne.preview(name, query)
+
+    # A stop clears the fast path for good.
+    assert :ok = SystemOne.stop(name)
+    assert :persistent_term.get({SystemOne, name, :preview}, nil) == nil
+  end
+
+  test "stopping the manager process erases the preview fast path" do
+    name = Module.concat(__MODULE__, Terminated)
+    {:ok, pid} = SystemOne.start_link(name: name, model: WithPreview)
+    assert_eventually_ready(name)
+    assert is_function(:persistent_term.get({SystemOne, name, :preview}, nil), 1)
+
+    manager = GenServer.whereis(name)
+    :ok = GenServer.stop(manager)
+    refute Process.alive?(manager)
+    assert :persistent_term.get({SystemOne, name, :preview}, nil) == nil
+
+    Process.exit(pid, :normal)
+  end
+
+  test "reload without overrides keeps the current configuration" do
+    name = Module.concat(__MODULE__, PlainReload)
+    start_supervised!({SystemOne, name: name, model: Alpha})
+    assert_eventually_ready(name)
+
+    assert :ok = SystemOne.reload(name)
+    assert %Status{state: :ready, model: Alpha} = SystemOne.status(name)
+  end
+
+  test "stop cancels a load that is still in progress" do
+    name = Module.concat(__MODULE__, StopWhileLoading)
+    start_supervised!({SystemOne, name: name, model: Slow})
+    assert %Status{state: :loading} = SystemOne.status(name)
+
+    assert :ok = SystemOne.stop(name)
+    assert %Status{state: :stopped} = SystemOne.status(name)
+
+    Process.sleep(200)
+    assert %Status{state: :stopped} = SystemOne.status(name)
+  end
+
+  test "a killed loader and a thrown load are reported as failures" do
+    killed_name = Module.concat(__MODULE__, KilledLoader)
+    start_supervised!({SystemOne, name: killed_name, model: Slow})
+    %{load_pid: load_pid} = :sys.get_state(killed_name)
+    assert is_pid(load_pid)
+    Process.exit(load_pid, :kill)
+
+    assert %Status{state: :failed, error: {:load_exit, :killed}} =
+             await_status(killed_name, :failed)
+
+    thrown_name = Module.concat(__MODULE__, ThrownLoader)
+    start_supervised!({SystemOne, name: thrown_name, model: Throwing})
+
+    assert %Status{state: :failed, error: {:throw, :load_thrown}} =
+             await_status(thrown_name, :failed)
+  end
+
+  test "a serving that cannot start is a failed load" do
+    name = Module.concat(__MODULE__, BadServing)
+    start_supervised!({SystemOne, name: name, model: BadServingOpts})
+    assert %Status{state: :failed, error: error} = await_status(name, :failed)
+    assert error != nil
+  end
+
+  test "a serving that exits during a query is reported as unavailable" do
+    name = Module.concat(__MODULE__, ExitingServing)
+    start_supervised!({SystemOne, name: name, model: Exiting})
+    assert_eventually_ready(name)
+
+    query = Query.new("state", [Question.new(:q, :noul, "Question?")])
+    assert {:error, {:unavailable, {:serving_exit, :query_exit}}} = SystemOne.query(name, query)
+  end
+
+  test "a dead serving discovered at query time flips the instance to failed" do
+    name = Module.concat(__MODULE__, DeadServing)
+    start_supervised!({SystemOne, name: name, model: Alpha})
+    assert_eventually_ready(name)
+
+    dead = spawn(fn -> :ok end)
+    ref = Process.monitor(dead)
+    assert_receive {:DOWN, ^ref, :process, ^dead, _}
+
+    :sys.replace_state(name, fn state -> %{state | serving_pid: dead} end)
+
+    query = Query.new("state", [Question.new(:q, :noul, "Question?")])
+    assert {:error, {:unavailable, {:failed, :serving_stopped}}} = SystemOne.query(name, query)
+    assert %Status{state: :failed} = SystemOne.status(name)
+  end
+
+  test "ignores stale and unrelated messages" do
+    name = Module.concat(__MODULE__, StaleMessages)
+    start_supervised!({SystemOne, name: name, model: Alpha})
+    assert_eventually_ready(name)
+
+    assert :ok = SystemOne.subscribe(name)
+    assert :ok = SystemOne.subscribe(name)
+
+    send(name, {:model_loaded, self(), {:ok, :ignored, []}})
+    send(name, {:await_ready_timeout, make_ref()})
+    send(name, {:DOWN, make_ref(), :process, self(), :normal})
+
+    assert %Status{state: :ready} = SystemOne.status(name)
+    assert Map.has_key?(:sys.get_state(name).subscribers, self())
   end
 
   defp assert_eventually_ready(name),

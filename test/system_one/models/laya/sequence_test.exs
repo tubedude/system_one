@@ -219,6 +219,40 @@ defmodule SystemOne.Models.Laya.SequenceTest do
              })
   end
 
+  test "normalizes map instructions to JSON" do
+    assert {:ok, question} = Sequence.normalize(Question.new(:q, :noul, %{"task" => "check"}))
+    assert question.instructions == ~s({"task":"check"})
+  end
+
+  test "preview reports no truncation when the state exactly fills the room" do
+    encode = fn text -> String.to_charlist(text) end
+    question = Question.new(:q, :noul, "Fits?")
+    assert {:ok, normalized} = Sequence.normalize(question)
+    config = %{max_len: 64, head_max_len: 32}
+
+    assert {:ok, probe} = Sequence.preview(encode, normalized, [], @ids, config)
+    assert probe.state_tokens == 0
+    assert probe.total_tokens == probe.header_tokens + 1
+
+    exact = List.duplicate(?x, probe.room)
+    assert {:ok, preview} = Sequence.preview(encode, normalized, exact, @ids, config)
+    assert preview.truncated? == false
+    assert preview.truncated_tokens == 0
+    assert preview.state_tokens == probe.room
+    assert preview.total_tokens == config.max_len
+
+    one_over = [?x | exact]
+    assert {:ok, preview} = Sequence.preview(encode, normalized, one_over, @ids, config)
+    assert preview.truncated? == true
+    assert preview.truncated_tokens == 1
+    assert preview.total_tokens == config.max_len
+
+    assert {:ok, %{ids: built}} =
+             Sequence.build(encode, normalized, to_string(one_over), @ids, config)
+
+    assert length(built) == config.max_len
+  end
+
   defp collect_encoded(acc) do
     receive do
       {:encoded, text} -> collect_encoded([text | acc])

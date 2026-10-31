@@ -296,6 +296,8 @@ defmodule SystemOne.InstallerTest do
   test "manifest decoding and validation reject malformed values" do
     checksum = String.duplicate("a", 64)
 
+    assert {:error, :invalid_manifest} = Manifest.decode("[]", InstallableModel)
+
     assert {:ok, manifest} =
              Manifest.decode(
                Jason.encode!(%{
@@ -323,7 +325,6 @@ defmodule SystemOne.InstallerTest do
     assert {:error, {:wrong_model, "other"}} =
              Manifest.decode(Jason.encode!(%{model: "other"}), InstallableModel)
 
-    assert {:error, _} = Manifest.decode("not json", InstallableModel)
     assert {:error, :invalid_manifest} = Manifest.decode("[]", InstallableModel)
     assert {:error, :invalid_manifest} = Manifest.validate(:not_a_manifest)
     assert {:error, :invalid_manifest} = Manifest.validate(%{manifest | files: [%{bad: true}]})
@@ -354,6 +355,164 @@ defmodule SystemOne.InstallerTest do
                manifest: manifest_path,
                manifest_sha256: "invalid"
              )
+  end
+
+  describe "over HTTP" do
+    setup %{tmp_dir: tmp_dir} do
+      root = Path.join(tmp_dir, "www") |> String.to_charlist()
+      File.mkdir_p!(root)
+
+      {:ok, httpd} =
+        :inets.start(:httpd,
+          port: 0,
+          server_name: ~c"system_one_test",
+          server_root: root,
+          document_root: root,
+          bind_address: {127, 0, 0, 1},
+          mime_types: [{~c"txt", ~c"text/plain"}, {~c"bin", ~c"application/octet-stream"}]
+        )
+
+      on_exit(fn -> :inets.stop(:httpd, httpd) end)
+      [{:port, port}] = :httpd.info(httpd, [:port])
+      base_url = "http://127.0.0.1:#{port}"
+
+      for {path, contents} <- InstallableModel.contents() do
+        target = Path.join(to_string(root), path)
+        File.mkdir_p!(Path.dirname(target))
+        File.write!(target, contents)
+      end
+
+      {:ok, base_url: base_url, www: to_string(root)}
+    end
+
+    test "downloads a bundle and its manifest with the built-in client", ctx do
+      {:ok, manifest} = InstallableModel.manifest(:default)
+      manifest = %{manifest | base_url: ctx.base_url <> "/", revision: nil}
+      contents = Manifest.encode!(manifest)
+      File.write!(Path.join(ctx.www, "manifest.txt"), contents)
+      destination = Path.join(ctx.tmp_dir, "http-model")
+
+      assert {:ok, ^destination} =
+               Installer.install(InstallableModel,
+                 destination: destination,
+                 manifest: ctx.base_url <> "/manifest.txt",
+                 manifest_sha256: sha256(contents),
+                 token: "secret-token"
+               )
+
+      for {path, expected} <- InstallableModel.contents() do
+        assert File.read!(Path.join(destination, path)) == expected
+      end
+    end
+
+    test "uses the revision as a path segment and reads file:// manifests", ctx do
+      File.mkdir_p!(Path.join(ctx.www, "rev1"))
+
+      for {path, contents} <- InstallableModel.contents() do
+        target = Path.join([ctx.www, "rev1", path])
+        File.mkdir_p!(Path.dirname(target))
+        File.write!(target, contents)
+      end
+
+      {:ok, manifest} = InstallableModel.manifest(:default)
+      manifest = %{manifest | base_url: ctx.base_url, revision: "rev1"}
+      contents = Manifest.encode!(manifest)
+      manifest_path = Path.join(ctx.tmp_dir, "rev-manifest.json")
+      File.write!(manifest_path, contents)
+      destination = Path.join(ctx.tmp_dir, "rev-model")
+
+      assert {:ok, ^destination} =
+               Installer.install(InstallableModel,
+                 destination: destination,
+                 manifest: "file://" <> manifest_path,
+                 manifest_sha256: sha256(contents)
+               )
+    end
+
+    test "reports HTTP status errors for files and manifests", ctx do
+      {:ok, manifest} = InstallableModel.manifest(:default)
+      manifest = %{manifest | base_url: ctx.base_url <> "/missing", revision: nil}
+      contents = Manifest.encode!(manifest)
+      File.write!(Path.join(ctx.www, "bad-base.txt"), contents)
+
+      assert {:error, {:download_failed, _path, {:http_status, 404}}} =
+               Installer.install(InstallableModel,
+                 destination: Path.join(ctx.tmp_dir, "never"),
+                 manifest: ctx.base_url <> "/bad-base.txt",
+                 manifest_sha256: sha256(contents)
+               )
+
+      assert {:error, {:manifest_http_status, 404}} =
+               Installer.install(InstallableModel,
+                 destination: Path.join(ctx.tmp_dir, "never"),
+                 manifest: ctx.base_url <> "/no-such-manifest.txt",
+                 manifest_sha256: String.duplicate("a", 64)
+               )
+    end
+
+    @tag :capture_log
+    test "reports transport errors for files and manifests", ctx do
+      {:ok, closed} = :gen_tcp.listen(0, [])
+      {:ok, closed_port} = :inet.port(closed)
+      :ok = :gen_tcp.close(closed)
+      dead_url = "http://127.0.0.1:#{closed_port}"
+
+      assert {:error, {:manifest_download_failed, _reason}} =
+               Installer.install(InstallableModel,
+                 destination: Path.join(ctx.tmp_dir, "never"),
+                 manifest: dead_url <> "/manifest.json",
+                 manifest_sha256: String.duplicate("a", 64)
+               )
+
+      {:ok, manifest} = InstallableModel.manifest(:default)
+      manifest = %{manifest | base_url: dead_url, revision: nil}
+      contents = Manifest.encode!(manifest)
+      manifest_path = Path.join(ctx.tmp_dir, "dead-manifest.json")
+      File.write!(manifest_path, contents)
+
+      assert {:error, {:download_failed, _path, _reason}} =
+               Installer.install(InstallableModel,
+                 destination: Path.join(ctx.tmp_dir, "never"),
+                 manifest: manifest_path,
+                 manifest_sha256: sha256(contents),
+                 receive_timeout: 1_000
+               )
+    end
+  end
+
+  test "reports a destination that cannot be written", %{tmp_dir: tmp_dir} do
+    blocker = Path.join(tmp_dir, "blocker")
+    File.write!(blocker, "not a directory")
+
+    download = fn _url, target, _opts -> File.write(target, "x") end
+
+    # The stage directory is a sibling of the destination, so put the
+    # destination under a regular file to make every mkdir fail.
+    assert {:error, {:stage_failed, :enotdir}} =
+             Installer.install(InstallableModel,
+               destination: Path.join(blocker, "model"),
+               download: download
+             )
+  end
+
+  test "lock rejects a parent that is a file and merges existing entries", %{tmp_dir: tmp_dir} do
+    blocker = Path.join(tmp_dir, "blocker")
+    File.write!(blocker, "not a directory")
+    assert {:error, :enotdir} = Lock.put(Path.join(blocker, "x.lock"), "test", %{})
+
+    readonly = Path.join(tmp_dir, "readonly")
+    File.mkdir_p!(readonly)
+    File.chmod!(readonly, 0o500)
+    on_exit(fn -> File.chmod(readonly, 0o700) end)
+
+    assert {:error, message} = Lock.put(Path.join(readonly, "x.lock"), "test", %{})
+    assert is_binary(message)
+
+    path = Path.join(tmp_dir, "merge.lock")
+    assert :ok = Lock.put(path, "one", %{"a" => 1})
+    assert :ok = Lock.put(path, "two", %{"b" => 2})
+    assert {:ok, %{"a" => 1}} = Lock.get(path, "one")
+    assert {:ok, %{"b" => 2}} = Lock.get(path, "two")
   end
 
   defp sha256(contents),
