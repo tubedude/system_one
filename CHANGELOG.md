@@ -6,6 +6,8 @@
     Rust toolchain is no longer needed to build.
   * `:execution_providers` now picks the EXLA client: `:cuda` or `:cpu`.
   * The first query of each new input shape compiles the graph.
+  * New `:compile_cache` option keeps compiled programs on disk across
+    restarts.
 
 ## v0.1.1 (2026-10-31)
 

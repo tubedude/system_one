@@ -3,6 +3,11 @@
 Date: 2026-10-31
 Author: Roberto Trevisan
 
+> **Update, 2026-10-31.** After the first version of this report, we read
+> Transmuter's source and found the EXLA disk cache. It answers questions 2
+> and 3 below. Additions are marked "Update". The rest of the report is
+> unchanged.
+
 ## Summary
 
 Transmuter 2.0.0 runs our ONNX model with no changes to the model and no custom code.
@@ -12,6 +17,7 @@ Transmuter 2.0.0 runs our ONNX model with no changes to the model and no custom 
 - On the GPU, Transmuter is about 15% faster than ONNX Runtime CUDA once warm.
 - On the CPU, Transmuter is about 35% slower than ONNX Runtime.
 - Transmuter's main cost is the first call: about 30 seconds of CUDA compile for each input shape.
+- **Update:** With the EXLA disk cache, a shape that was compiled before loads in 2.7 seconds after a restart.
 
 We are trying a move from Ortex to Transmuter on the `transmuter` branch of this repository. The main reasons are Nx 1.0 support and a pure Nx stack. Speed is a wash on the GPU. The last Ortex version is the `ortex` tag.
 
@@ -100,6 +106,19 @@ Notes:
 - CUDA compile takes about 30 seconds per input shape. We pad to 4 sequence lengths, so warm-up costs about 2 minutes unless the compile cache helps. ONNX Runtime has no such step, so this is the largest practical difference for us.
 - During the CUDA compile, `ptxas` reported register spills in several `gemm_fusion_dot` kernels. The worst one spilled 8,936 bytes.
 
+## Update: compile cache on disk
+
+`Transmuter.compile/3` compiles the example inputs right away. Other shapes compile on their first call and stay in a per-segment memory cache, 8 shapes by default (`:cache_size`). With EXLA, a `:cache` path prefix also saves each compiled segment to disk as `<prefix>-<hash>`. The hash covers the graph without its weights, the argument shapes, and the static inputs. A new OS process loads the file instead of compiling.
+
+We tested it on the GPU with the same model and input, in two separate processes:
+
+| Run | Compile | First run |
+|---|---|---|
+| First process, empty cache | 29.2 s | 0.27 s |
+| Second process, cache on disk | 2.7 s | 0.26 s |
+
+One shape used 2.2 MB of disk. The `transmuter` branch of this repository now passes a `:compile_cache` option through to this `:cache` path.
+
 ## Problems we hit
 
 None of these are Transmuter bugs. They are all about the EXLA build and CUDA setup. We list them because Transmuter users will hit them too.
@@ -123,7 +142,9 @@ None of these are Transmuter bugs. They are all about the EXLA build and CUDA se
 
 1. On CUDA, Transmuter drifts about twice as far from the CPU result as ONNX Runtime CUDA does (6.0e-3 against 3.1e-3). Is that expected? Is there an option to force full-precision matmuls?
 2. Can we compile several input shapes ahead of time, at load, to avoid a 30-second pause on the first call of each padding size?
+   **Update:** We found no API for this. A call per shape with dummy inputs works, as `Transmuter.Serving` does at startup. With the disk cache, this matters only on the first start. A built-in warm-up for a list of shapes would still help.
 3. Can the compile cache persist across VM restarts for CUDA, and what is the cache key?
+   **Update:** Answered by the `:cache` option, described above. It works on CUDA and on the CPU.
 4. Is CPU speed a goal? On the CPU, Transmuter runs about 35% slower than ONNX Runtime for this model.
 
 ## How to reproduce
@@ -134,6 +155,7 @@ The files are in this folder.
 - `laya_ref.bin` holds those inputs and reference outputs, in Erlang term format.
 - `compare.exs` runs the Transmuter CPU comparison.
 - `compare_gpu.exs` runs the Transmuter CUDA comparison.
+- **Update:** `disk_cache.exs` tests the EXLA disk cache. Run it twice, as two processes.
 - `time_ortex_cuda.exs` times Ortex on CUDA. Run it from a project whose Ortex was built with the `cuda` feature.
 - `mix.exs` and `config.exs` are the standalone project used for the Transmuter runs. `config.exs` turns off GPU preallocation.
 - `gpu_env.sh` puts the CUDA libraries from NVIDIA's pip wheels on `LD_LIBRARY_PATH`. The install steps are in `guides/gpu.md`.

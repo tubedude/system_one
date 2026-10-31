@@ -25,6 +25,14 @@ defmodule SystemOne do
     batch_timeout: [
       type: :non_neg_integer,
       doc: "How long, in milliseconds, to wait for a batch to fill."
+    ],
+    compile_cache: [
+      type: :string,
+      doc: """
+      A path prefix where compiled programs are saved, such as
+      `"/var/cache/my_app/laya"`. A restart loads them instead of compiling
+      again. The directory must exist and be writable. Unset by default.
+      """
     ]
   ]
 

@@ -103,3 +103,19 @@ Transmuter compiles the graph once for each input shape. On a GPU, each shape
 takes about 30 seconds the first time. Laya pads batches to a few row counts
 and four sequence lengths, so the first queries after a restart are slow.
 Later queries of the same shape take tens of milliseconds.
+
+To keep compiled programs across restarts, set `:compile_cache` to a path
+prefix in a writable directory:
+
+```elixir
+{SystemOne,
+ name: MyApp.SystemOne,
+ model: SystemOne.Models.Laya,
+ model_dir: "priv/models/laya",
+ execution_providers: [:cuda],
+ compile_cache: "/var/cache/my_app/laya"}
+```
+
+On an RTX 3060 Ti, one shape took 29 seconds to compile and 2.7 seconds to
+load from this cache. Each shape uses about 2 MB of disk. In a container,
+put the cache on a persistent volume, or it is lost on every deploy.

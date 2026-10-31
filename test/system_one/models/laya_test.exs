@@ -172,6 +172,24 @@ defmodule SystemOne.Models.LayaTest do
     end
 
     @tag timeout: 300_000
+    @tag :tmp_dir
+    test "compile_cache writes compiled programs to disk", %{tmp_dir: tmp_dir} do
+      name = Module.concat(__MODULE__, CachedLaya)
+      prefix = Path.join(tmp_dir, "laya")
+
+      start_supervised!(
+        {SystemOne, name: name, model: Laya, model_dir: "priv/models/laya", compile_cache: prefix}
+      )
+
+      assert {:ok, _} = SystemOne.await_ready(name, timeout: 240_000)
+
+      query = Query.new("short state", [Question.new(:q, :noul, "Is it?")])
+      assert {:ok, _result} = SystemOne.query(name, query)
+
+      assert [_ | _] = Path.wildcard(prefix <> "-*")
+    end
+
+    @tag timeout: 300_000
     test "preview total matches the real post-truncation input token count" do
       name = Module.concat(__MODULE__, RealLaya)
       start_supervised!({SystemOne, name: name, model: Laya, model_dir: "priv/models/laya"})

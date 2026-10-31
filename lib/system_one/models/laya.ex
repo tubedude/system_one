@@ -26,6 +26,8 @@ defmodule SystemOne.Models.Laya do
       [GPU guide](gpu.md) to use `:cuda`.
     * `:batch_size` - defaults to `64`.
     * `:batch_timeout` - defaults to `10` milliseconds.
+    * `:compile_cache` - a path prefix for compiled programs on disk. Unset by
+      default. See [Compilation](#module-compilation).
 
   ## Limits
 
@@ -57,6 +59,12 @@ defmodule SystemOne.Models.Laya do
   64, 128, 256, or 512. So the first query of each new shape is slow: about 3
   seconds on the CPU and about 30 seconds on a GPU. Later queries of the same
   shape are fast.
+
+  Set `:compile_cache` to keep compiled programs on disk. Each shape is saved
+  in its own file, about 2 MB, named `<prefix>-<hash>`. After a restart, a
+  saved shape loads in about 3 seconds instead of compiling. The hash covers
+  the graph and the input shapes, so a new model version writes new files.
+  Shapes that were never used are still compiled on their first query.
   """
 
   @behaviour SystemOne.Model
@@ -132,7 +140,9 @@ defmodule SystemOne.Models.Laya do
       runtime = %{config: config, tokenizer: tokenizer, ids: ids}
 
       serving =
-        Nx.Serving.new(fn _defn_options -> init_run(model, client, config, batch_size) end)
+        Nx.Serving.new(fn _defn_options ->
+          init_run(model, client, config, batch_size, Keyword.get(opts, :compile_cache))
+        end)
         |> Nx.Serving.client_preprocessing(&preprocess(&1, runtime))
         |> Nx.Serving.client_postprocessing(&postprocess/2)
 
@@ -271,16 +281,16 @@ defmodule SystemOne.Models.Laya do
   # Compiles the graph from a template of the smallest shape. Transmuter caches
   # one compiled program per input shape, so the same run handles every padded
   # shape that reaches it.
-  defp init_run(model, client, config, batch_size) do
+  defp init_run(model, client, config, batch_size, compile_cache) do
     shapes = length(row_buckets(batch_size)) * length(batch_keys(config.max_len))
     template = model_inputs(template_tuple(1, hd(batch_keys(config.max_len))))
 
-    run =
-      Transmuter.compile(model, template,
-        compiler: EXLA,
-        client: client,
-        cache_size: max(8, shapes)
-      )
+    compile_opts = [compiler: EXLA, client: client, cache_size: max(8, shapes)]
+
+    compile_opts =
+      if compile_cache, do: [cache: compile_cache] ++ compile_opts, else: compile_opts
+
+    run = Transmuter.compile(model, template, compile_opts)
 
     fn batch ->
       size = batch.size
