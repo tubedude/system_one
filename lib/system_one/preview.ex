@@ -30,7 +30,17 @@ defmodule SystemOne.Preview do
 
   """
 
-  @type question_preview :: SystemOne.Models.Laya.Sequence.question_preview()
+  @type question_preview :: %{
+          question_id: String.t() | atom(),
+          type: SystemOne.Question.question_type(),
+          header_tokens: non_neg_integer(),
+          state_tokens: non_neg_integer(),
+          raw_state_tokens: non_neg_integer(),
+          truncated_tokens: non_neg_integer(),
+          truncated?: boolean(),
+          total_tokens: non_neg_integer(),
+          room: non_neg_integer()
+        }
 
   @type t :: %__MODULE__{
           total_tokens: non_neg_integer(),

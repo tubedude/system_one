@@ -66,18 +66,6 @@ defmodule SystemOne.Models.Laya.Sequence do
     end
   end
 
-  @type question_preview :: %{
-          question_id: term(),
-          type: atom(),
-          header_tokens: non_neg_integer(),
-          state_tokens: non_neg_integer(),
-          raw_state_tokens: non_neg_integer(),
-          truncated_tokens: non_neg_integer(),
-          truncated?: boolean(),
-          total_tokens: non_neg_integer(),
-          room: non_neg_integer()
-        }
-
   @doc false
   @spec preview(
           (String.t() -> [non_neg_integer()]),
@@ -85,7 +73,7 @@ defmodule SystemOne.Models.Laya.Sequence do
           [non_neg_integer()],
           map(),
           map()
-        ) :: {:ok, question_preview()} | {:error, String.t()}
+        ) :: {:ok, SystemOne.Preview.question_preview()} | {:error, String.t()}
   def preview(encode, question, state_ids, special_ids, config) when is_list(state_ids) do
     with {:ok, header} <- header(encode, question, special_ids, config) do
       header_tokens = length(header.sequence)

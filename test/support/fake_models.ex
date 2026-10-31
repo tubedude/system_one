@@ -156,6 +156,7 @@ end
 defmodule SystemOne.TestModels.WithPreviewCallback do
   @behaviour SystemOne.Model
 
+  @impl true
   def load(_opts), do: {:ok, SystemOne.TestServing.serving(:callback_preview), [batch_size: 8]}
 
   @impl true
