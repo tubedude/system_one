@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.1 (2026-10-31)
+
+  * Fixed `:act_probability` in Laya answers. Every question after the first
+    one read the wrong value from the model output. It now reads column 0 of
+    each question's row, like the official `@receptron/laya` package. The bug
+    was also in v0.1.x.
+
 ## v0.2.0 (2026-10-31)
 
 Breaking: SystemOne now needs Nx 1.0 and EXLA. Ortex is no longer a

@@ -500,9 +500,20 @@ defmodule SystemOne.Models.Laya do
   defp batch_keys(max_len),
     do: [64, 128, 256, max_len] |> Enum.map(&min(&1, max_len)) |> Enum.uniq()
 
+  # act_probs is {questions, 2}, a softmax over the act head. Like the official
+  # @receptron/laya package (actData[r * nAct]), the act probability of a
+  # question is column 0 of its row.
+  @doc false
+  def act_probabilities(act_probs) do
+    act_probs
+    |> Nx.backend_transfer()
+    |> Nx.slice_along_axis(0, 1, axis: 1)
+    |> Nx.to_flat_list()
+  end
+
   defp postprocess({{logits, act_probs}, _server_info}, metadata) do
     logits = Nx.to_flat_list(Nx.backend_transfer(logits))
-    act_probs = Nx.to_flat_list(Nx.backend_transfer(act_probs))
+    act_probs = act_probabilities(act_probs)
 
     answers =
       metadata.questions
@@ -512,7 +523,7 @@ defmodule SystemOne.Models.Laya do
         values = Enum.slice(logits, row * @max_options, length(labels))
         temperature = temperature(question, length(labels), metadata.config)
         probabilities = softmax(Enum.map(values, &(&1 / temperature)))
-        {question.id, answer(question, labels, probabilities, Enum.at(act_probs, row, 0.0))}
+        {question.id, answer(question, labels, probabilities, Enum.at(act_probs, row))}
       end)
 
     %Result{

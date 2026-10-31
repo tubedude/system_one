@@ -26,7 +26,7 @@ Add `system_one` to your dependencies:
 ```elixir
 def deps do
   [
-    {:system_one, "~> 0.2.0"}
+    {:system_one, "~> 0.2.1"}
   ]
 end
 ```
@@ -65,7 +65,7 @@ end
 
 defp deps do
   [
-    {:system_one, "~> 0.2.0"},
+    {:system_one, "~> 0.2.1"},
     {:usage_rules, "~> 1.1", only: :dev, runtime: false}
   ]
 end
